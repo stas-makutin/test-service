@@ -10,9 +10,9 @@ import subprocess
 import application
 
 class NixService():
-    _svc_name_ = "testsvc"
-    _svc_display_name_ = "Test Service"
-    _svc_description_ = "Test Python service with HTTP server in it."
+    _svc_name_ = application.Application._svc_name_
+    _svc_display_name_ = application.Application._svc_display_name_
+    _svc_description_ = application.Application._svc_description_
     _lock_file_ = f"/var/run/{_svc_name_}.pid"
     _init_script_ = f"/etc/init.d/{_svc_name_}"
     __pid = None
@@ -213,6 +213,15 @@ esac
             print("Service %s stopped successfully." % cls._svc_name_)
         else:
             print("Service %s stop failed." % cls._svc_name_)
+
+    @classmethod
+    def Status(cls):
+        if not cls.__IsInstalled():
+            print("Service %s is not installed." % cls._svc_name_)
+        elif cls.__IsRunning():
+            print("Service %s is running." % cls._svc_name_)
+        else:
+            print("Service %s stopped." % cls._svc_name_)
 
     @classmethod
     def __StopHandler(cls, signal_number, stack_frame):

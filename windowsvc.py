@@ -8,9 +8,9 @@ import servicemanager
 import application
 
 class WindowsService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "testsvc"
-    _svc_display_name_ = "Test Service"
-    _svc_description_ = "Test Python service with HTTP server in it."
+    _svc_name_ = application.Application._svc_name_
+    _svc_display_name_ = application.Application._svc_display_name_
+    _svc_description_ = application.Application._svc_description_
     
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
@@ -115,3 +115,21 @@ class WindowsService(win32serviceutil.ServiceFramework):
         else:
             win32serviceutil.StopServiceWithDeps(cls._svc_name_)
             print("Service %s stopped successfully." % cls._svc_name_)
+
+    @classmethod
+    def Status(cls):
+        state = cls.__CurrentState();
+        if state is None:
+            print("Service %s is not installed." % cls._svc_name_)
+        elif state == win32service.SERVICE_RUNNING:
+            print("Service %s is running." % cls._svc_name_)
+        elif state == win32service.SERVICE_STOP_PENDING:
+            print("Service %s is stopping." % cls._svc_name_)
+        elif state == win32service.SERVICE_PAUSE_PENDING:
+            print("Service %s is pausing." % cls._svc_name_)
+        elif state == win32service.SERVICE_STOPPED:
+            print("Service %s stopped." % cls._svc_name_)
+        elif state == win32service.SERVICE_PAUSED:
+            print("Service %s paused." % cls._svc_name_)
+        else:
+            print("Service %s is starting." % cls._svc_name_)
