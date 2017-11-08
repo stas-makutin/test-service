@@ -56,13 +56,7 @@ class NixService():
             cls.__GetProcessId()
             if cls.__pid is not None:
                 if cls.__IsProcessRunning(cls.__pid):
-                    cmd = subprocess.run(["ps", "-p", str(cls.__pid), "--no-headers", "-o", "args"], stdout=subprocess.PIPE).stdout.decode("utf-8")
-                    if cmd.startswith(cls.__GetCommand()):
-                        return True
-        except OSError:
-            pass
-        try:
-            os.remove(cls._lock_file_)
+                    return True
         except OSError:
             pass
         return False
@@ -70,8 +64,9 @@ class NixService():
     @classmethod
     def __Stop(cls):
         cls.__GetProcessId()
-        rc = False
+        rc = True
         if cls.__pid is not None:
+            rc = False
             os.kill(cls.__pid, signal.SIGTERM)
             for _ in range(60):
                 if not cls.__IsRunning():
@@ -82,7 +77,7 @@ class NixService():
                 os.kill(cls.__pid, signal.SIGKILL)
                 for _ in range(60):
                     if not cls.__IsRunning():
-                        rc = False
+                        rc = True
                         break
                     time.sleep(0.25)
             try:
