@@ -29,6 +29,5 @@ def run(_app_):
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, signal_handler)
     appThread.start()
-    while not appThread.stoppedEvent.wait(0.3):
-        pass
+    appThread.stoppedEvent.wait()
     

@@ -2,19 +2,25 @@ import daemon
 import signal
 import lockfile.pidlockfile
 import os
+import pwd
+import grp
 import errno
 import sys
 import stat
 import time
 import subprocess
 import application
+#import logging
 
 class NixService():
     _svc_name_ = application.Application._svc_name_
     _svc_display_name_ = application.Application._svc_display_name_
     _svc_description_ = application.Application._svc_description_
-    _lock_file_ = f"/var/run/{_svc_name_}.pid"
+    _svc_user_ = _svc_name_
+    _svc_group_ = _svc_name_
+    _lock_file_ = f"/var/run/{_svc_name_}/pid"
     _init_script_ = f"/etc/init.d/{_svc_name_}"
+    _log_dir_ = f"/var/log/{_svc_name_}"
     __pid = None
 
     @classmethod
@@ -87,23 +93,110 @@ class NixService():
                 pass
         return rc
     
+    @staticmethod
+    def __MakeDir(dirPath, uid, gid):
+        dirCreated = False
+        error = None
+        try:
+            os.makedirs(dirPath)
+            dirCreated = True
+        except OSError as err:
+            if err.errno != errno.EEXIST:
+                error = err
+        if error is None:
+            try:
+                os.chmod(dirPath, stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH | stat.S_IWUSR | stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+                os.chown(dirPath, uid, gid)
+            except OSError as err:
+                error = err
+                if dirCreated:
+                    try:
+                        os.rmdir(dirPath)
+                    except:
+                        pass
+        return (dirPath, dirCreated, error)
+    
+    @classmethod
+    def __GetLockDir(cls):
+        return os.path.dirname(os.path.abspath(cls._lock_file_))
+    
+    @classmethod
+    def __MakeLockDir(cls, uid, gid):
+        return cls.__MakeDir(cls.__GetLockDir(), uid, gid)
+
+    @classmethod
+    def __GetUserAndGroup(cls):
+        gid = None
+        uid = None
+        if cls._svc_group_:
+            try:
+                gid = grp.getgrnam(cls._svc_group_).gr_gid
+            except KeyError:
+                pass
+        if cls._svc_user_:
+            try:
+                user = pwd.getpwnam(cls._svc_user_)
+                uid = user.pw_uid;
+                if gid is None:
+                    gid = user.pw_gid;
+            except KeyError:
+                pass
+        return (uid, gid)
+    
     @classmethod
     def Install(cls):
         if cls.__IsInstalled():
             print("Service %s installed already." % cls._svc_name_)
             return
         
-        success = False
-        try:
-            with open(cls._init_script_, 'w') as f:
-                f.write("""\
+        success = True
+        uid, gid = cls.__GetUserAndGroup()
+        
+        groupCreated = False
+        if success and gid is None and cls._svc_group_:
+            success = False
+            if subprocess.run(["groupadd", cls._svc_group_]).returncode == 0:
+                gid = grp.getgrnam(cls._svc_group_).gr_gid
+                groupCreated = success = True
+
+        userCreated = False
+        if success and uid is None and cls._svc_user_:
+            success = False
+            cmd = ["useradd", "--system", cls._svc_user_];
+            if gid is not None:
+                cmd.append("--gid")
+                cmd.append(str(gid))
+            if subprocess.run(cmd).returncode == 0:
+                user = pwd.getpwnam(cls._svc_user_)
+                uid = user.pw_uid
+                if gid is None:
+                    gid = user.pw_gid;
+                userCreated = success = True
+
+        if uid is None:
+            uid = os.getuid()
+        if gid is None:
+            gid = os.getgid()
+
+        lockDir, lockDirCreated, error = None, False, None
+        if success:
+            lockDir, lockDirCreated, error = cls.__MakeLockDir(uid, gid) 
+            if error is not None:
+                print(repr(error))
+                success = False
+        
+        if success:
+            success = False
+            try:
+                with open(cls._init_script_, 'w') as f:
+                    f.write("""\
 #! /bin/sh
 ### BEGIN INIT INFO
 # Provides:          {serviceName}
 # Required-Start:    $local_fs $network $named $remote_fs $syslog $time
 # Required-Stop:     $local_fs $network $named $remote_fs $syslog $time
-# Default-Start:     3 4 5
-# Default-Stop:      0 1 2 6
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
 # Short-Description: {serviceDisplayName}
 # Description:       {serviceDescription}
 ### END INIT INFO
@@ -131,29 +224,42 @@ case "$1" in
         exit 1
     ;;
 esac
-""".format(
-                serviceName = cls._svc_name_,
-                serviceDisplayName = cls._svc_display_name_,
-                serviceDescription = cls._svc_description_,
-                applicationCommand = cls.__GetCommand()
-                ))
-            
-            mode = os.stat(cls._init_script_).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-            os.chmod(cls._init_script_, mode)
-                
-            if os.path.isfile("/usr/lib/lsb/install_initd") and os.access("/usr/lib/lsb/install_initd", os.X_OK):
-                if subprocess.run(["/usr/lib/lsb/install_initd", cls._init_script_]).returncode == 0:
-                    success = True
+"""
+                    .format(
+                        serviceName = cls._svc_name_,
+                        serviceDisplayName = cls._svc_display_name_,
+                        serviceDescription = cls._svc_description_,
+                        applicationCommand = cls.__GetCommand()
+                    ))
+	
+                mode = os.stat(cls._init_script_).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                os.chmod(cls._init_script_, mode)
+
+                if os.path.isfile("/usr/lib/lsb/install_initd") and os.access("/usr/lib/lsb/install_initd", os.X_OK):
+                	if subprocess.run(["/usr/lib/lsb/install_initd", cls._init_script_]).returncode == 0:
+                		success = True
                 else:
-                    os.remove(cls._init_script_)
-            else:
-                success = True
-        except OSError as err:
-            print(repr(err))
-            
+                	if subprocess.run(["update-rc.d", cls._svc_name_, "defaults"]).returncode == 0:
+                		success = True
+            except OSError as err:
+                print(repr(err))
+
         if success:
             print("Service %s installed successfully." % cls._svc_name_)
         else:
+            try:
+                os.remove(cls._init_script_)
+            except:
+                pass
+            if lockDirCreated:
+                try:
+                    os.rmdir(lockDir)
+                except:
+                    pass
+            if userCreated:
+                subprocess.run(["userdel", cls._svc_user_])
+            if groupCreated:
+                subprocess.run(["groupdel", cls._svc_group_])
             print("Service %s installation failed." % cls._svc_name_)
     
     @classmethod
@@ -168,17 +274,28 @@ esac
                 
         success = False
         try:
-            cleanup = True
             if os.path.isfile("/usr/lib/lsb/remove_initd") and os.access("/usr/lib/lsb/remove_initd", os.X_OK):
-                if subprocess.run(["/usr/lib/lsb/remove_initd", cls._init_script_]).returncode != 0:
-                    cleanup = False
-            if cleanup:
-                os.remove(cls._init_script_)
-                if os.path.isfile(cls._lock_file_):
-                    os.remove(cls._lock_file_)
-                success = True
+                if subprocess.run(["/usr/lib/lsb/remove_initd", cls._init_script_]).returncode == 0:
+                    success = True
+            else:
+                if subprocess.run(["update-rc.d", cls._svc_name_, "remove"]).returncode == 0:
+                    success = True
         except OSError as err:
             print(repr(err))
+            
+        if success:
+            try:
+                os.remove(cls._init_script_)
+            except:
+                pass
+            try:
+                os.remove(cls._lock_file_)
+            except:
+                pass
+            try:
+                os.rmdir(cls.__GetLockDir())
+            except:
+                pass
 
         if success:
             print("Service %s uninstalled successfully." % cls._svc_name_)
@@ -228,7 +345,25 @@ esac
     def Run(self):
         global __app
         
+        _uid, _gid = self.__GetUserAndGroup()
+            
+        if _uid is None:
+            _uid = os.getuid()
+        if _gid is None:
+            _gid = os.getgid()
+            
+        self.__MakeLockDir(_uid, _gid);
+            
+#         lh=logging.StreamHandler()
+#         logger = logging.getLogger()
+#         logger.setLevel(logging.INFO)
+#         logger.addHandler(lh)
+        
         context = daemon.DaemonContext(
+#            files_preserve=[lh.stream],
+#            stderr=lh.stream,
+            uid=_uid,
+            gid=_gid,
             umask=0o002,
             pidfile=lockfile.pidlockfile.PIDLockFile(self._lock_file_)
         )
@@ -239,10 +374,13 @@ esac
         
         with context:
             print("Started")
+#            logger.info("Started")
             try:
                 __app = application.Application()
                 __app.run()
             except:
                 print(sys.exc_info())
+#                logger.error(sys.exc_info())
                 raise
+#            logger.info("Stopped")
             print("Stopped")
