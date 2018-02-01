@@ -10,23 +10,20 @@ argParser.add_argument('--stop', action='store_true', help='Stop service')
 argParser.add_argument('-r', '--restart', action='store_true', help='Restart service')
 argParser.add_argument('--status', action='store_true', help='Print service status')
 argParser.add_argument('--console', action='store_true', help='Run as terminal application')
-argParser.add_argument('-p', '--port', type=int, default=8888, help='HTTP server port, default %(default)d.')
 
 args = argParser.parse_args();
 isWindows = platform.system() == "Windows"
 
 if args.console:
     import console
-    
-    app = application.Application(args.port)
-    console.run(app)    
+    console.run()    
 else:
     if isWindows:
         import windowsvc
         service = windowsvc.WindowsService
     else:
         import nixsvc
-        service = nixsvc.NixService()
+        service = nixsvc.NixService
 
     printUsage = True
     

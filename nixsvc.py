@@ -6,11 +6,12 @@ import pwd
 import grp
 import errno
 import sys
+import shutil
 import stat
 import time
 import subprocess
 import application
-#import logging
+import logging
 
 class NixService():
     _svc_name_ = application.Application._svc_name_
@@ -20,7 +21,10 @@ class NixService():
     _svc_group_ = _svc_name_
     _lock_file_ = f"/var/run/{_svc_name_}/pid"
     _init_script_ = f"/etc/init.d/{_svc_name_}"
-    _log_dir_ = f"/var/log/{_svc_name_}"
+    _log_file_ = f"/var/log/{_svc_name_}/{_svc_name_}.log"
+    _logrotate_file_ = f"/etc/logrotate.d/{_svc_name_}"
+    _log_backup_count_ = application.Application._svc_log_backup_count_
+    _log_max_bytes_ = application.Application._svc_log_max_bytes_
     __pid = None
 
     @classmethod
@@ -125,6 +129,14 @@ class NixService():
         return cls.__MakeDir(cls.__GetLockDir(), uid, gid)
 
     @classmethod
+    def __GetLogDir(cls):
+        return os.path.dirname(os.path.abspath(cls._log_file_))
+    
+    @classmethod
+    def __MakeLogDir(cls, uid, gid):
+        return cls.__MakeDir(cls.__GetLogDir(), uid, gid)
+
+    @classmethod
     def __GetUserAndGroup(cls):
         gid = None
         uid = None
@@ -184,6 +196,36 @@ class NixService():
             if error is not None:
                 print(repr(error))
                 success = False
+
+        logDir, logDirCreated, error = None, False, None
+        if success:
+            logDir, logDirCreated, error = cls.__MakeLogDir(uid, gid) 
+            if error is not None:
+                print(repr(error))
+                success = False
+
+        if success and os.path.isdir(os.path.dirname(os.path.abspath(cls._logrotate_file_))):
+            success = False
+            try:
+                with open(cls._logrotate_file_, 'w') as f:
+                    f.write("""\
+{logFile} {{
+    rotate {backupCount}
+    size {maxBytes}
+    compress
+    missingok
+    notifempty
+}}
+"""
+                    .format(
+                        logFile = cls._log_file_,
+                        backupCount = cls._log_backup_count_,
+                        maxBytes = cls._log_max_bytes_
+                    ))
+
+                success = True
+            except OSError as err:
+                print(repr(err))
         
         if success:
             success = False
@@ -251,9 +293,18 @@ esac
                 os.remove(cls._init_script_)
             except:
                 pass
+            try:
+                os.remove(cls._logrotate_file_)
+            except:
+                pass
             if lockDirCreated:
                 try:
                     os.rmdir(lockDir)
+                except:
+                    pass
+            if logDirCreated:
+                try:
+                    os.rmdir(logDir)
                 except:
                     pass
             if userCreated:
@@ -293,10 +344,18 @@ esac
             except:
                 pass
             try:
-                os.rmdir(cls.__GetLockDir())
+                shutil.rmtree(cls.__GetLockDir(), True)
             except:
                 pass
-
+            try:
+                os.remove(cls._logrotate_file_)
+            except:
+                pass
+            try:
+                shutil.rmtree(cls.__GetLogDir(), True)
+            except:
+                pass
+            
         if success:
             print("Service %s uninstalled successfully." % cls._svc_name_)
         else:
@@ -353,15 +412,39 @@ esac
             _gid = os.getgid()
             
         self.__MakeLockDir(_uid, _gid);
+        self.__MakeLogDir(_uid, _gid);
+        
+        log = logging.getLogger(self._svc_name_);
+        log.propagate = False
+        lh = None
+        if os.path.exists(self._logrotate_file_):
+            lh = logging.handlers.WatchedFileHandler(filename=self._log_file_, encoding="utf-8")
+        else:
+            import gzip
             
-#         lh=logging.StreamHandler()
-#         logger = logging.getLogger()
-#         logger.setLevel(logging.INFO)
-#         logger.addHandler(lh)
+            def namer(name):
+                return name + ".gz"
+            
+            def rotator(source, dest):
+                with open(source, 'rb') as fsrc:
+                    with gzip.open(dest, 'wb') as fdst:
+                        shutil.copyfileobj(fsrc, fdst)
+            
+            lh = logging.handlers.RotatingFileHandler(
+                filename=self._log_file_, 
+                encoding="utf-8", 
+                maxBytes=self._log_max_bytes_, 
+                backupCount=self._log_backup_count_
+            )
+            lh.rotator = rotator
+            lh.namer = namer
+            
+        lh.setFormatter(logging.Formatter('%(asctime)s %(levelno)s %(message)s'))
+        log.setLevel(logging.INFO);
+        log.addHandler(lh)
         
         context = daemon.DaemonContext(
-#            files_preserve=[lh.stream],
-#            stderr=lh.stream,
+            files_preserve=[lh.stream],
             uid=_uid,
             gid=_gid,
             umask=0o002,
@@ -374,13 +457,12 @@ esac
         
         with context:
             print("Started")
-#            logger.info("Started")
+            log.info(f"{self._svc_name_} started")
             try:
-                __app = application.Application()
+                __app = application.Application(log, self._log_file_)
                 __app.run()
             except:
                 print(sys.exc_info())
-#                logger.error(sys.exc_info())
-                raise
-#            logger.info("Stopped")
+                log.error(f"{self._svc_name_} failed:\n{sys.exc_info()}", )
+            log.info(f"{self._svc_name_} stopped")
             print("Stopped")
